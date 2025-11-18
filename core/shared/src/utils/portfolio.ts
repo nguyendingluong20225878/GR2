@@ -1,0 +1,112 @@
+import { Types } from "mongoose";
+import { connectToDatabase } from "../db";
+import { tokenPricesTable } from "../db/schema/token_prices";
+import { tokensTable } from "../db/schema/tokens";
+import { usersTable } from "../db/schema/users";
+import { logger } from "./logger";
+
+/**
+ * ユーザーの初期ポートフォリオをセットアップする共通関数
+ * Auth.js での新規ユーザー登録時、および seed.ts でのテストユーザー作成時に使用
+ *
+ * @param userId ポートフォリオを設定するユーザーID
+ * @param options カスタム設定オプション
+ */
+export async function setupInitialPortfolio(
+  userId: string,
+  options?: {
+    // カスタム残高設定（指定された場合はデフォルト設定より優先）- USD建て
+    customBalances?: Record<string, number>;
+    // 特定のトークンシンボルのみを使用
+    specificSymbols?: string[];
+  },
+): Promise<void> {
+  try {
+    await connectToDatabase();
+
+    const tokenQuery = options?.specificSymbols && options.specificSymbols.length > 0
+      ? { symbol: { $in: options.specificSymbols } }
+      : {};
+
+    const tokens = await tokensTable.find(tokenQuery).lean();
+
+    if (!tokens.length) {
+      logger.error("setupInitialPortfolio", "初期ポートフォリオのセットアップに必要なトークンが見つかりませんでした");
+      return;
+    }
+
+    // トークン価格を取得
+    const tokenPrices = await tokenPricesTable
+      .find({
+        tokenAddress: { $in: tokens.map((t) => t.address) },
+      })
+      .lean();
+
+    // 価格マップを作成
+    const priceMap = new Map(tokenPrices.map((tp) => [tp.tokenAddress, parseFloat(tp.priceUsd)]));
+
+    // デフォルトのUSD建て残高設定
+    const defaultUsdBalances: Record<string, number> = {
+      SOL: 2000, // $2,000 worth of SOL
+      JUP: 1000, // $1,000 worth of JUP
+      JTO: 1000, // $1,000 worth of JTO
+      RAY: 1000, // $1,000 worth of RAY
+      HNT: 1000, // $1,000 worth of HNT
+      PYTH: 1000, // $1,000 worth of PYTH
+      TRUMP: 1000, // $1,000 worth of TRUMP
+      WIF: 1000, // $1,000 worth of WIF
+      W: 1000, // $1,000 worth of W
+      MEW: 1000, // $1,000 worth of MEW
+      POPCAT: 1000, // $1,000 worth of POPCAT
+      ORCA: 1000, // $1,000 worth of ORCA
+      ZEUS: 1000, // $1,000 worth of ZEUS
+      KMNO: 1000, // $1,000 worth of KMNO
+      WBTC: 2000, // $2,000 worth of WBTC
+      USDC: 2000, // $2,000 worth of USDC
+      BONK: 1000, // $1,000 worth of BONK
+      WSUI: 1000, // $1,000 worth of WSUI
+      BIO: 1000, // $1,000 worth of BIO
+      LAYER: 1000, // $1,000 worth of LAYER
+      AIXBT: 1000, // $1,000 worth of AIXBT
+      ACT: 1000, // $1,000 worth of ACT
+      Fartcoin: 1000, // $1,000 worth of Fartcoin
+      MELANIA: 1000, // $1,000 worth of MELANIA
+    };
+
+    // 各トークンに対して残高を作成
+    const initialBalances = tokens.map((token) => {
+      // カスタム残高（USD建て）が指定されている場合はそれを使用し、
+      // なければデフォルト残高を使用、どちらもなければ0
+      const usdAmount = options?.customBalances?.[token.symbol] ?? defaultUsdBalances[token.symbol] ?? 0;
+      const price = priceMap.get(token.address) || 0;
+
+      // トークン数量を計算（USD金額 ÷ トークン価格）
+      // 価格が0の場合は0を設定
+      const tokenAmount = price > 0 ? usdAmount / price : 0;
+
+      return {
+        tokenAddress: token.address,
+        balance: tokenAmount.toString(),
+        updatedAt: new Date(),
+      };
+    });
+
+    // 残高が0より大きいもののみフィルタリング
+    const balancesToInsert = initialBalances.filter(({ balance }) => parseFloat(balance) > 0);
+
+    const normalizedUserId = Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : userId;
+
+    if (balancesToInsert.length > 0) {
+      await usersTable.updateOne(
+        { _id: normalizedUserId },
+        { $set: { balances: balancesToInsert } },
+        { upsert: false },
+      );
+    }
+
+    logger.info("setupInitialPortfolio", `Completed initial portfolio setup for user ${userId}`);
+  } catch (error) {
+    logger.error("setupInitialPortfolio", "Failed to setup initial portfolio", error);
+    throw error;
+  }
+}

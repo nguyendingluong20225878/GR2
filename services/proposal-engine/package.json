@@ -1,0 +1,19 @@
+{
+  "name": "@gr2/proposal-engine",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/langgraph.ts",
+  "scripts": {
+    "dev": "tsx watch src/langgraph.ts",
+    "start": "tsx src/langgraph.ts"
+  },
+  "dependencies": {
+    "@gr2/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+

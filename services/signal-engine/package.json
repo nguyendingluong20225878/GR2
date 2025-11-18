@@ -1,0 +1,11 @@
+{
+  "name": "@gr2/signal-engine",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "python src/detector.py",
+    "start": "python src/detector.py"
+  },
+  "dependencies": {}
+}
+
