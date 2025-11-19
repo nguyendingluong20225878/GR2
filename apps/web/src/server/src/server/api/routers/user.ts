@@ -1,9 +1,12 @@
 import { revalidateProfile } from "@/app/actions";
 import { createTRPCRouter, protectedProcedure, publicProcedure } from "@/server/api/trpc";
-import type { UserSelect } from "@gr2/shared";
-import { usersTable } from "@gr2/shared";
-import { eq } from "drizzle-orm";
+import { connectToDatabase, usersTable, type UserSelect } from "@gr2/shared";
 import { z } from "zod";
+
+async function findUserByWallet(walletAddress: string) {
+  await connectToDatabase();
+  return usersTable.findOne({ walletAddress });
+}
 
 // Router xử lý các API liên quan đến Users
 export const usersRouter = createTRPCRouter({
@@ -17,13 +20,7 @@ export const usersRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       // Nếu dùng mock DB (cho môi trường dev/test) thì lấy từ mock
       const user: UserSelect | null =
-        ctx.useMockDb && ctx.mock
-          ? await ctx.mock.getUserByWallet(input.walletAddress)
-          : (
-              (await ctx.db.query.usersTable.findFirst({
-                where: eq(usersTable.walletAddress, input.walletAddress),
-              })) ?? null
-            );
+        ctx.useMockDb && ctx.mock ? await ctx.mock.getUserByWallet(input.walletAddress) : (await findUserByWallet(input.walletAddress));
 
       return user;
     }),
@@ -46,13 +43,7 @@ export const usersRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       // Kiểm tra user đã tồn tại chưa
       const existingUser: UserSelect | null =
-        ctx.useMockDb && ctx.mock
-          ? await ctx.mock.getUserByWallet(input.walletAddress)
-          : (
-              (await ctx.db.query.usersTable.findFirst({
-                where: eq(usersTable.walletAddress, input.walletAddress),
-              })) ?? null
-            );
+        ctx.useMockDb && ctx.mock ? await ctx.mock.getUserByWallet(input.walletAddress) : (await findUserByWallet(input.walletAddress));
 
       if (existingUser) {
         // Nếu user đã tồn tại → trả về user đó
@@ -66,18 +57,17 @@ export const usersRouter = createTRPCRouter({
       }
 
       // Tạo user mới trong DB thật
-      const [newUser] = await ctx.db
-        .insert(usersTable)
-        .values({
-          walletAddress: input.walletAddress,
-          name: input.username || `User-${input.walletAddress.slice(0, 8)}`,
-          email: input.email || `${input.walletAddress.slice(0, 8)}@example.com`,
-          age: 0,
-          tradeStyle: input.tradeStyle,
-          totalAssetUsd: input.totalAssetUsd,
-          cryptoInvestmentUsd: input.cryptoInvestmentUsd,
-        })
-        .returning();
+      await connectToDatabase();
+
+      const newUser = await usersTable.create({
+        walletAddress: input.walletAddress,
+        name: input.username || `User-${input.walletAddress.slice(0, 8)}`,
+        email: input.email || `${input.walletAddress.slice(0, 8)}@example.com`,
+        age: 0,
+        tradeStyle: input.tradeStyle,
+        totalAssetUsd: input.totalAssetUsd,
+        cryptoInvestmentUsd: input.cryptoInvestmentUsd,
+      });
 
       return newUser;
     }),
@@ -93,13 +83,7 @@ export const usersRouter = createTRPCRouter({
 
     // Lấy thông tin user theo wallet address
     const user: UserSelect | null =
-      ctx.useMockDb && ctx.mock
-        ? await ctx.mock.getUserByWallet(ctx.session.user.walletAddress)
-        : (
-            (await ctx.db.query.usersTable.findFirst({
-              where: eq(usersTable.walletAddress, ctx.session.user.walletAddress),
-            })) ?? null
-          );
+      ctx.useMockDb && ctx.mock ? await ctx.mock.getUserByWallet(ctx.session.user.walletAddress) : (await findUserByWallet(ctx.session.user.walletAddress));
 
     if (!user) {
       throw new Error("Không tìm thấy người dùng");
@@ -138,11 +122,7 @@ export const usersRouter = createTRPCRouter({
       const user: UserSelect | null =
         ctx.useMockDb && ctx.mock
           ? await ctx.mock.getUserByWallet(ctx.session.user.walletAddress)
-          : (
-              (await ctx.db.query.usersTable.findFirst({
-                where: eq(usersTable.walletAddress, ctx.session.user.walletAddress),
-              })) ?? null
-            );
+          : await findUserByWallet(ctx.session.user.walletAddress);
 
       if (!user) {
         throw new Error("Không tìm thấy người dùng");
@@ -163,20 +143,23 @@ export const usersRouter = createTRPCRouter({
         return updated;
       }
 
-      // Cập nhật dữ liệu user trong DB thật
-      const [updatedUser] = await ctx.db
-        .update(usersTable)
-        .set({
-          riskTolerance: input.riskTolerance,
-          tradeStyle: input.tradeStyle,
-          totalAssetUsd: input.totalAssetUsd ? parseInt(input.totalAssetUsd, 10) : user.totalAssetUsd,
-          cryptoInvestmentUsd: input.cryptoInvestmentUsd
-            ? parseInt(input.cryptoInvestmentUsd, 10)
-            : user.cryptoInvestmentUsd,
-          age: input.age ? parseInt(input.age, 10) : user.age,
-        })
-        .where(eq(usersTable.id, user.id))
-        .returning();
+      await connectToDatabase();
+
+      const updatedUser = await usersTable.findOneAndUpdate(
+        { walletAddress: ctx.session.user.walletAddress },
+        {
+          $set: {
+            riskTolerance: input.riskTolerance ?? user.riskTolerance,
+            tradeStyle: input.tradeStyle ?? user.tradeStyle,
+            totalAssetUsd: input.totalAssetUsd ? parseInt(input.totalAssetUsd, 10) : user.totalAssetUsd,
+            cryptoInvestmentUsd: input.cryptoInvestmentUsd
+              ? parseInt(input.cryptoInvestmentUsd, 10)
+              : user.cryptoInvestmentUsd,
+            age: input.age ? parseInt(input.age, 10) : user.age,
+          },
+        },
+        { new: true },
+      );
 
       // Revalidate để cập nhật cache UI
       revalidateProfile();
@@ -197,13 +180,7 @@ export const usersRouter = createTRPCRouter({
 
       // Xác nhận sự tồn tại của user+3-
       const user: UserSelect | null =
-        ctx.useMockDb && ctx.mock
-          ? await ctx.mock.getUserByWallet(ctx.session.user.walletAddress)
-          : (
-              (await ctx.db.query.usersTable.findFirst({
-                where: eq(usersTable.walletAddress, ctx.session.user.walletAddress),
-              })) ?? null
-            );
+        ctx.useMockDb && ctx.mock ? await ctx.mock.getUserByWallet(ctx.session.user.walletAddress) : await findUserByWallet(ctx.session.user.walletAddress);
 
       if (!user) {
         throw new Error("Không tìm thấy người dùng");
@@ -215,11 +192,9 @@ export const usersRouter = createTRPCRouter({
       }
 
       // Update DB thật
-      const [updatedUser] = await ctx.db
-        .update(usersTable)
-        .set({})
-        .where(eq(usersTable.id, user.id))
-        .returning();
+      await connectToDatabase();
+
+      const updatedUser = await usersTable.findOne({ walletAddress: ctx.session.user.walletAddress });
 
       return updatedUser;
     }),

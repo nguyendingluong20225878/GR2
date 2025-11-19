@@ -166,9 +166,9 @@ async function seed() {
   await seedMockSignal();
 
   console.log("Seed dữ liệu hoàn tất!");
-  await disconnectFromDatabase();
+    await disconnectFromDatabase();
 }
 
 seed().catch(err => {
   console.error("Seed thất bại:", err);
-});
+  });

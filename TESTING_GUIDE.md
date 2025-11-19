@@ -8,6 +8,15 @@
 
 ---
 
+## ✅ Kết Quả Test Mới Nhất (2025-11-19)
+
+- `npm run test:connection` ✔️ Kết nối thành công tới Atlas cluster.
+- `npm run test:schemas` ✔️ Users=7, TokenPrices=2, Signals=2, Tweets=1 (Tokens chưa seed → chạy `npm run db:seed` nếu cần).
+- `npm run db:seed` ✔️ Đã seed mock user, balances, signals, tweets.
+- `npm run test:integrity` ✔️ Tất cả kiểm tra pass, cảnh báo: chưa có price cho token `JUP...` → thêm giá vào `mockTokenPrices` nếu muốn.
+
+---
+
 ## 🔧 Chuẩn Bị Môi Trường
 
 ### 1. Cài đặt Dependencies

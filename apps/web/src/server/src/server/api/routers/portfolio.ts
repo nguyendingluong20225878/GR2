@@ -1,47 +1,15 @@
 import { createTRPCRouter, publicProcedure } from "@/server/api/trpc";
-import type { TokenSelect, UserBalanceSelect, UserSelect } from "@gr2/shared";
-import {
-  perpPositionsTable,
-  portfolioSnapshots,
-  tokenPrice24hAgoView,
-  userBalancesTable,
-  usersTable,
-  type NodePostgresDatabase,
-} from "@gr2/shared";
 import BigNumber from "bignumber.js";
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
-
 import { z } from "zod";
 
-// Define a type for the token price data (adjust based on your actual schema)
-// type TokenPrice = {
-//   tokenAddress: string;
-//   priceUsd: string; // Based on usage below
-//   // Include other relevant fields from your tokenPricesTable schema
-//   timestamp?: Date; // Example: if you need timestamp
-// };
-
-// 24時間前の価格を取得する関数
-async function get24hPriceHistory(db: NodePostgresDatabase, tokenAddresses: string[]): Promise<Map<string, string>> {
-  if (tokenAddresses.length === 0) {
-    return new Map();
-  }
-
-  // Query the materialized view
-  const priceHistoryEntries = await db
-    .select({
-      tokenAddress: tokenPrice24hAgoView.tokenAddress,
-      priceUsd: tokenPrice24hAgoView.priceUsd,
-    })
-    .from(tokenPrice24hAgoView)
-    .where(inArray(tokenPrice24hAgoView.tokenAddress, tokenAddresses));
-
-  const priceMap = new Map<string, string>();
-  for (const entry of priceHistoryEntries) {
-    priceMap.set(entry.tokenAddress, entry.priceUsd);
-  }
-  return priceMap;
-}
+import {
+  connectToDatabase,
+  tokenPricesTable,
+  tokensTable,
+  usersTable,
+  type TokenSelect,
+  type UserSelect,
+} from "@gr2/shared";
 
 // 価格変動率を計算する関数
 function calculatePriceChange(currentPrice: string, oldPrice: string): string {
@@ -69,13 +37,15 @@ export const portfolioRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      if (!(ctx.useMockDb && ctx.mock)) {
+        await connectToDatabase();
+      }
+
       // Get user by wallet address
       let user: UserSelect | null | undefined =
         ctx.useMockDb && ctx.mock
           ? await ctx.mock.getUserByWallet(input.walletAddress)
-          : await ctx.db.query.usersTable.findFirst({
-              where: eq(usersTable.walletAddress, input.walletAddress),
-            });
+          : (await usersTable.findOne({ walletAddress: input.walletAddress }).lean()) ?? null;
 
       if (!user && ctx.useMockDb && ctx.mock) {
         user = await ctx.mock.ensureUser(input.walletAddress);
@@ -86,15 +56,10 @@ export const portfolioRouter = createTRPCRouter({
       }
 
       // Get user's token balances
-      const balances: Array<UserBalanceSelect & { token: TokenSelect }> =
+      const balances =
         ctx.useMockDb && ctx.mock
           ? await ctx.mock.getUserBalances(user.id)
-          : await ctx.db.query.userBalancesTable.findMany({
-              where: eq(userBalancesTable.userId, user.id),
-              with: {
-                token: true,
-              },
-            });
+          : user.balances ?? [];
 
       // Get token prices
       const tokenAddresses = balances.map((balance) => balance.tokenAddress);
@@ -103,47 +68,57 @@ export const portfolioRouter = createTRPCRouter({
 
       // Fetch current and 24h-ago prices in parallel
       let priceMap: Record<string, string> = {};
-      let oldPrices: Map<string, string> = new Map();
+      const oldPrices = new Map<string, string>(); // Placeholder until we implement historical prices
       if (tokenAddresses.length > 0) {
         if (ctx.useMockDb && ctx.mock) {
           const rows = await ctx.mock.getTokenPrices(tokenAddresses);
           for (const r of rows) priceMap[r.tokenAddress] = r.priceUsd;
-          oldPrices = new Map();
         } else {
-          const [currentResult, priceHistoryMap] = await Promise.all([
-            ctx.db.execute(sql`
-              SELECT DISTINCT ON (token_address) token_address, price_usd
-              FROM token_prices
-              WHERE token_address IN (${sql.join(tokenAddresses, sql`,`)})
-              ORDER BY token_address, last_updated DESC
-            `),
-            get24hPriceHistory(ctx.db, tokenAddresses),
-          ]);
-          const currentRows = (currentResult.rows ?? []) as Array<{ token_address: string; price_usd: string }>;
-          for (const row of currentRows) {
-            priceMap[row.token_address] = row.price_usd;
+          await connectToDatabase();
+          const currentPrices = await tokenPricesTable
+            .find({ tokenAddress: { $in: tokenAddresses } })
+            .lean();
+          for (const price of currentPrices) {
+            priceMap[price.tokenAddress] = price.priceUsd;
           }
-          oldPrices = priceHistoryMap;
         }
+      }
+
+      // fetch token metadata for balances
+      const tokens =
+        ctx.useMockDb && ctx.mock
+          ? await ctx.mock.getAllTokens()
+          : tokenAddresses.length > 0
+            ? await tokensTable.find({ address: { $in: tokenAddresses } }).lean()
+            : [];
+
+      const tokenMetaMap = new Map<string, TokenSelect | undefined>();
+      for (const token of tokens) {
+        tokenMetaMap.set(token.address, token as unknown as TokenSelect);
       }
 
       // Calculate total value and build portfolio
       let totalValue = new BigNumber(0);
       const portfolio = balances.map((balance) => {
+        const countBalance = balance.balance ?? "0";
+        const embeddedToken = (balance as { token?: TokenSelect }).token;
+        const fallbackToken = embeddedToken ?? tokenMetaMap.get(balance.tokenAddress);
         const tokenPrice = priceMap[balance.tokenAddress] || "0";
-        const valueUsd = new BigNumber(balance.balance).multipliedBy(tokenPrice).toString();
+        const valueUsd = new BigNumber(countBalance).multipliedBy(tokenPrice).toString();
+        const symbol = fallbackToken?.symbol ?? "UNKNOWN";
+        const iconUrl = fallbackToken?.iconUrl ?? "";
 
         // Add to total
         totalValue = totalValue.plus(valueUsd);
 
         return {
-          symbol: balance.token.symbol,
+          symbol,
           tokenAddress: balance.tokenAddress,
-          balance: balance.balance,
+          balance: countBalance,
           priceUsd: tokenPrice,
           valueUsd: valueUsd,
           priceChange24h: "0", // Will be calculated next
-          iconUrl: balance.token.iconUrl,
+          iconUrl,
         };
       });
 
@@ -158,14 +133,17 @@ export const portfolioRouter = createTRPCRouter({
       });
 
       // Get open perp positions
-      const perpPositions = ctx.useMockDb
-        ? []
-        : await ctx.db.query.perpPositionsTable.findMany({
-            where: and(eq(perpPositionsTable.userId, user.id), eq(perpPositionsTable.status, "open")),
-            with: {
-              token: true,
-            },
-          });
+      const perpPositions: Array<{
+        id: string;
+        tokenAddress: string;
+        token?: TokenSelect;
+        positionDirection: string;
+        leverage: string;
+        entryPrice: string;
+        positionSize: string;
+        collateralAmount: string;
+        liquidationPrice: string;
+      }> = ctx.useMockDb ? [] : [];
 
       // Process perp positions and calculate their values
       const perpPositionsData = perpPositions.map((position) => {
@@ -209,13 +187,15 @@ export const portfolioRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      if (!(ctx.useMockDb && ctx.mock)) {
+        await connectToDatabase();
+      }
+
       // Get user by wallet address
       let user: UserSelect | null | undefined =
         ctx.useMockDb && ctx.mock
           ? await ctx.mock.getUserByWallet(input.walletAddress)
-          : await ctx.db.query.usersTable.findFirst({
-              where: eq(usersTable.walletAddress, input.walletAddress),
-            });
+          : (await usersTable.findOne({ walletAddress: input.walletAddress }).lean()) ?? null;
 
       if (!user && ctx.useMockDb && ctx.mock) {
         user = await ctx.mock.ensureUser(input.walletAddress);
@@ -248,16 +228,7 @@ export const portfolioRouter = createTRPCRouter({
       }
 
       // Get snapshots for the period
-      const snapshots = ctx.useMockDb
-        ? []
-        : await ctx.db.query.portfolioSnapshots.findMany({
-            where: and(
-              eq(portfolioSnapshots.userId, user.id),
-              gte(portfolioSnapshots.timestamp, startDate),
-              lte(portfolioSnapshots.timestamp, now),
-            ),
-            orderBy: [portfolioSnapshots.timestamp],
-          });
+      const snapshots: Array<{ timestamp: Date; totalValueUsd: BigNumber }> = ctx.useMockDb ? [] : [];
 
       // If no snapshots, return current portfolio value
       if (snapshots.length === 0) {
@@ -315,12 +286,14 @@ export const portfolioRouter = createTRPCRouter({
     }),
 
   getUserNfts: publicProcedure.input(z.object({ walletAddress: z.string() })).query(async ({ ctx, input }) => {
+    if (!(ctx.useMockDb && ctx.mock)) {
+      await connectToDatabase();
+    }
+
     let user: UserSelect | null | undefined =
       ctx.useMockDb && ctx.mock
         ? await ctx.mock.getUserByWallet(input.walletAddress)
-        : await ctx.db.query.usersTable.findFirst({
-            where: eq(usersTable.walletAddress, input.walletAddress),
-          });
+        : (await usersTable.findOne({ walletAddress: input.walletAddress }).lean()) ?? null;
 
     if (!user && ctx.useMockDb && ctx.mock) {
       user = await ctx.mock.ensureUser(input.walletAddress);
