@@ -28,7 +28,7 @@ export async function connectToDatabase(): Promise<Connection> {
     mongoose.set("strictQuery", true);
 
     globalWithMongoose.__mongooseConnection!.promise = mongoose
-      .connect(MONGODB_URI, {
+      .connect(MONGODB_URI!, { // FIX: Thêm "!" để ép kiểu string non-null
         autoIndex: true,
         serverSelectionTimeoutMS: 10_000,
       })

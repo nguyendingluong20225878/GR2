@@ -1,4 +1,4 @@
-import { connectToDatabase, disconnectFromDatabase } from ".";
+import { connectToDatabase, disconnectFromDatabase, mongoose } from ".";
 import { initialTokens, mockSignal, mockTokenPrices, mockTweets, mockUser, mockUserBalances, staticProposals } from "../constants";
 import { logger } from "../utils";
 import { setupInitialPortfolio } from "../utils/portfolio";
@@ -22,20 +22,43 @@ async function resetCollections() {
     "news_sites", "token_prices", "tweets",
     "signals", "interest_rates"
   ];
+  await connectToDatabase(); // Đảm bảo kết nối
   for (const name of collections) {
-    const coll = (await import("./db")).db.collection(name); // tùy cách bạn export db
-    await coll.deleteMany({});
+    const db = mongoose.connection.db; 
+    await db!.collection(name).deleteMany({}); // FIX: Thêm ! cho db
     console.log(`Đã xóa collection: ${name}`);
   }
 }
 
 const seedUsers = async () => {
   try {
-    const users: UserInsert[] = [
-      { name: "Nguyễn Văn A", age: 30, email: "nguyenvana@example.com", tradeStyle: "conservative", totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "Fgkki5sVbKpdLF28nvahDyrYeUQ5Cn7VJ8WTXHzLWEB5" },
-      { name: "Trần Thị B", age: 25, email: "tranthib@example.com", tradeStyle: "moderate", totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "6R57iMy4cxpMBWu6wNP8648HoTEbim8fDK2ZWFdYPJ5D" },
-      { name: "Lê Văn C", age: 35, email: "levanc@example.com", tradeStyle: "aggressive", totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "6yVF82TqGTwvix2tCGzxUhWGKkBB185sTU7A2bvACnF2" },
-    ];
+    // FIX: Loại bỏ khai báo type trên dòng định nghĩa và cast toàn bộ array sau đó
+    const users = [
+      {
+        name: "Nguyễn Văn A", age: 30, email: "nguyenvana@example.com", tradeStyle: "conservative",
+        totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "Fgkki5sVbKpdLF28nvahDyrYeUQ5Cn7VJ8WTXHzLWEB5",
+        // FIX: Sửa lỗi Type 'undefined' is not assignable to type 'NativeDate'. Dùng null as any
+        emailVerified: null as any, 
+        riskTolerance: "medium", notificationEnabled: false, 
+        balances: [] as any, // FIX: Sử dụng as any cho mảng rỗng
+      },
+      {
+        name: "Trần Thị B", age: 25, email: "tranthib@example.com", tradeStyle: "moderate",
+        totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "6R57iMy4cxpMBWu6wNP8648HoTEbim8fDK2ZWFdYPJ5D",
+        // FIX
+        emailVerified: null as any, 
+        riskTolerance: "medium", notificationEnabled: false, 
+        balances: [] as any,
+      },
+      {
+        name: "Lê Văn C", age: 35, email: "levanc@example.com", tradeStyle: "aggressive",
+        totalAssetUsd: 1000000, cryptoInvestmentUsd: 100000, walletAddress: "6yVF82TqGTwvix2tCGzxUhWGKkBB185sTU7A2bvACnF2",
+        // FIX
+        emailVerified: null as any, 
+        riskTolerance: "medium", notificationEnabled: false, 
+        balances: [] as any,
+      },
+    ] as UserInsert[]; // FIX: Cast toàn bộ array để giải quyết lỗi index signature
 
     console.log("Đang chèn dữ liệu người dùng...");
 
@@ -66,26 +89,31 @@ const seedProposals = async (generatedUsers: UserDocument[]) => {
     const allPotentialProposals: ProposalInsert[] = generatedUsers.flatMap((user) =>
       staticProposals.map((staticProposal) => ({
         ...staticProposal,
-        userId: user._id.toString(),
+        userId: user._id, // userId trong ProposalInsert là Types.ObjectId
       }))
-    );
+    ) as ProposalInsert[];
 
     if (allPotentialProposals.length === 0) return;
 
-    const existingProposals = await proposalTable.find({}, { title: 1, userId: 1 }).lean<{ title: string; userId: string }>();
-    const existingSet = new Set(existingProposals.map(p => `${p.title}-${p.userId}`));
+    // FIX: Sử dụng as unknown as để giải quyết lỗi casting nghiêm ngặt của lean()
+    const existingProposals = await proposalTable.find({}, { title: 1, userId: 1 }).lean() as unknown as Array<{ title: string; userId: Types.ObjectId }>;
+    
+    // Sửa lỗi: Dùng .toString() để so sánh ObjectId
+    const existingSet = new Set(existingProposals.map(p => `${p.title}-${p.userId.toString()}`));
 
-    const proposalsToInsert = allPotentialProposals.filter(p => !existingSet.has(`${p.title}-${p.userId}`));
+    // Sửa lỗi: Dùng .toString() khi so sánh userId
+    const proposalsToInsert = allPotentialProposals.filter(p => !existingSet.has(`${p.title}-${p.userId.toString()}`));
 
     if (proposalsToInsert.length === 0) {
       logger.info("seedProposals", "Tất cả proposals đã tồn tại.");
       return;
     }
 
-    await proposalTable.insertMany(proposalsToInsert, { ordered: false });
+    await proposalTable.insertMany(proposalsToInsert as ProposalInsert[], { ordered: false });
 
     proposalsToInsert.forEach(p => {
-      const user = generatedUsers.find(u => u._id.toString() === p.userId);
+      // Sửa lỗi: Dùng .toString() để so sánh ObjectId
+      const user = generatedUsers.find(u => u._id.toString() === p.userId.toString());
       console.log(`Đã chèn proposal "${p.title}" cho người dùng "${user ? user.name : 'Unknown'}"`);
     });
   } catch (error) {
@@ -98,7 +126,23 @@ const seedMockUser = async (): Promise<UserDocument | null> => {
   const existingUser = await usersTable.findOne({ email: mockUser.email });
   if (existingUser) return existingUser;
 
-  const createdUser = await usersTable.create(mockUser);
+  // Khởi tạo mockUser với các trường cần thiết để khớp với UserInsert schema
+  const userToCreate: UserInsert = {
+    ...mockUser,
+    emailVerified: mockUser.emailVerified, 
+    // FIX: mockUser không có balances. Khởi tạo là empty array.
+    balances: [] as any, 
+    riskTolerance: mockUser.riskTolerance,
+    notificationEnabled: mockUser.notificationEnabled,
+    image: mockUser.image,
+    age: mockUser.age,
+    tradeStyle: mockUser.tradeStyle,
+    totalAssetUsd: mockUser.totalAssetUsd,
+    cryptoInvestmentUsd: mockUser.cryptoInvestmentUsd,
+    walletAddress: mockUser.walletAddress,
+  } as UserInsert;
+  
+  const createdUser = await usersTable.create(userToCreate);
   console.log(`Đã chèn mock user "${mockUser.name}"`);
   return createdUser;
 };
@@ -154,7 +198,7 @@ async function seed() {
   if (RESET_BEFORE_SEED) await resetCollections();
 
   const users = await seedUsers();
-  await seedProposals(users);
+  await seedProposals(users as UserDocument[]);
 
   const mockUserDoc = await seedMockUser();
   if (mockUserDoc) {

@@ -21,7 +21,7 @@ export const initialTokens: TokenInsert[] = [
 
 const STATIC_EXPIRATION_DATE = 1000 * 60 * 60 * 24;
 
-export const staticProposals: Omit<ProposalInsert, "userId">[] = [
+export const staticProposals = [
   {
     title: "Test Proposal: Reduce SOL Exposure",
     summary: "Test summary",
@@ -54,4 +54,4 @@ export const staticProposals: Omit<ProposalInsert, "userId">[] = [
       },
     },
   },
-];
+] as any as Omit<ProposalInsert, "userId">[]; // FIX: Sử dụng type assertion kép

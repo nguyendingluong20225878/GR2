@@ -15,7 +15,7 @@ const contractCallSchema = z.object({
     }),
     fromAmount: z.number(),
   }),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(), // FIX: Thêm z.string() làm kiểu key
 });
 
 const financialImpactSchema = {

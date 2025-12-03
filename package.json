@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "GR2 Project - Monorepo for Web3 Signal Detection and Proposal Generation",
   "private": true,
+  "packageManager": "npm@10.8.1",
   "workspaces": [
     "apps/*",
     "core/*",

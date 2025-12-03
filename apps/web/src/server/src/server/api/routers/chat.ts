@@ -10,7 +10,7 @@ import { TRPCError } from "@trpc/server";
 
 export const chatRouter = createTRPCRouter({
   /**
-   * Lấy danh sách các thread (cuộc trò chuyện) của người dùng
+   * 
    * GET /api/chat/threads
    *
    * - Có hỗ trợ tìm kiếm theo tiêu đề
@@ -22,7 +22,7 @@ export const chatRouter = createTRPCRouter({
    * - Sắp xếp theo updatedAt giảm dần
    * - Lấy message cuối cùng từ array messages trong mỗi thread
    */
-  getUserThreads: protectedProcedure
+  getUserThreads: protectedProcedure//Lấy danh sách các thread (cuộc trò chuyện) của người dùng
     .input(
       z.object({
         limit: z.number().min(1).max(50).nullish(),
