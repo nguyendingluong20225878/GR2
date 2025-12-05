@@ -1,22 +1,26 @@
 import fs from "fs";
 import path from "path";
-import { Builder, By, Key, until, WebDriver, WebElement } from "selenium-webdriver"; // Thêm Key, WebElement
+import { Logger, LogLevel, XAccountSelect, Tweet as CoreTweet } from "../../shared/src"
+import { Builder, By, Key, until, WebDriver, WebElement, IWebDriverOptionsCookie as SeleniumCookie } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome";
+import { getAllXAccounts, saveTweets } from "./db";
+import { randomDelay } from "./utils";
 
+// Import đầy đủ các hằng số từ constant.ts
 import {
   LOGIN_URL,
   X_BASE_URL,
   INITIAL_INPUT_SELECTOR_CSS,
-  PASSWORD_INPUT_SELECTOR_CSS,
+  PASSWORD_SELECTOR_CSS, // Đã sửa từ PASSWORD_INPUT_SELECTOR_CSS
   TWEET_ARTICLE_SELECTOR_CSS,
   TIME_SELECTOR_CSS,
   DEFAULT_SELENIUM_SCRIPT_TIMEOUT,
   ELEMENT_LOCATE_TIMEOUT_MS,
   PAGE_LOAD_WAIT_MS,
   REPLY_COUNT_SELECTOR_CSS,
-  RETWEET_COUNT_SELECTOR_CSS,
-  LIKE_COUNT_SELECTOR_CSS,
-  TWEET_TEXT_SELECTOR_CSS,
+  RETWEET_COUNT_SELECTOR_CSS, // Đã thêm
+  LIKE_COUNT_SELECTOR_CSS, // Đã thêm
+  TWEET_TEXT_SELECTOR_CSS, // Đã thêm
   PRIMARY_COLUMN_SELECTOR_CSS,
   SHORT_DELAY_MIN,
   SHORT_DELAY_MAX,
@@ -24,7 +28,12 @@ import {
   MEDIUM_DELAY_MAX,
   LONG_DELAY_MIN,
   LONG_DELAY_MAX,
-} from "./constant";
+  NEXT_BUTTON_XPATH, // Đã thêm XPath cho nút Next
+  USERNAME_VERIFICATION_SELECTOR_CSS, // Đã thêm selector cho bước xác minh username
+  COOKIES_DIR_RELATIVE, // Đã thêm
+  COOKIES_FILENAME, // Đã thêm
+  SCREENSHOTS_DIR_RELATIVE, // Đã thêm
+} from "./constant"; // Cần đảm bảo file constant.ts đã được cập nhật đầy đủ
 
 interface Credentials {
   email: string;
@@ -33,17 +42,13 @@ interface Credentials {
 }
 
 interface Tweet {
-  time: string; // ISO string
-  data: string;
-  url: string;
-  replyCount: number | null;
-  retweetCount: number | null;
-  likeCount: number | null;
-  impressionsCount: number | null;
-}
-
-function randomDelay(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+  time: string; // ISO string
+  data: string;
+  url: string;
+  replyCount: number | null;
+  retweetCount: number | null;
+  likeCount: number | null;
+  impressionsCount: number | null;
 }
 
 function parseEngagementCount(text: string | null): number | null {
@@ -61,17 +66,19 @@ function parseEngagementCount(text: string | null): number | null {
 }
 
 export class XScraper {
-  private driver: WebDriver | null = null;
-  private credentials: Credentials;
+  private driver: WebDriver | null = null;
+  private credentials: Credentials;
 
-  constructor(credentials: Credentials) { // ham khoi tao
-    this.credentials = credentials;
+  constructor(credentials: Credentials) { // ham khoi tao
+    this.credentials = credentials;
   }
 
   // cookies la du lieu nho luu trong trinh duyet
   private getCookiesFilePath(): string {
-    // create and return path to cookies.json file
-    return path.join(__dirname, "cookies.json");
+    // Cải tiến: Sử dụng hằng số và tạo thư mục
+    const dir = path.resolve(process.cwd(), COOKIES_DIR_RELATIVE);
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, COOKIES_FILENAME);
   }
 
   private loadCookies(): any[] | null { // any[] : mang cookies
@@ -97,11 +104,12 @@ export class XScraper {
 
   // Kiem tra cookies het han chua ?
   private areCookiesExpired(cookies: any[]): boolean {
-    const filePath = this.getCookiesFilePath();
-    if (!fs.existsSync(filePath)) return true;
-    const stats = fs.statSync(filePath);
-    const ageHours = (Date.now() - stats.mtimeMs) / (1000 * 60 * 60);
-    return ageHours > 24; // cookies het han sau 24h
+    // Cải tiến: Kiểm tra dựa trên trường expiry trong cookie nếu có, nếu không thì dùng logic cũ (24h)
+    const now = Date.now();
+    const expiredByAge = (Date.now() - fs.statSync(this.getCookiesFilePath()).mtimeMs) / (1000 * 60 * 60) > 24;
+    if (expiredByAge) return true;
+
+    return cookies.some((c) => typeof c.expiry === "number" && c.expiry * 1000 < now);
   }
 
   private async initDriver(cookiesToInject?: any[]): Promise<void> {
@@ -109,6 +117,7 @@ export class XScraper {
     options.addArguments("--headless=new"); // Chạy trình duyệt ở chế độ headless
     options.addArguments("--no-sandbox");
     options.addArguments("--disable-dev-shm-usage");
+    options.addArguments("--user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'"); // Thêm user-agent để giảm khả năng bị chặn
 
     // dieu chinh neu chay tren linux arm64
     if (process.platform === "linux" && process.arch === "arm64") {
@@ -123,6 +132,16 @@ export class XScraper {
     // Thiết lập timeout mặc định
     await this.driver.manage().setTimeouts({ script: DEFAULT_SELENIUM_SCRIPT_TIMEOUT });
 
+    // Script chống phát hiện bot
+    await this.driver.executeScript(`
+      if (navigator.webdriver === true) {
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: true
+        });
+      }
+    `);
+
 
     if (cookiesToInject && cookiesToInject.length > 0) {
       await this.driver.get(X_BASE_URL);
@@ -130,7 +149,8 @@ export class XScraper {
         try {
           // Thêm kiểm tra domain, name, value trước khi addCookie
           if (cookie.name && cookie.value && cookie.domain) {
-            await this.driver.manage().addCookie(cookie);
+            // Ép kiểu thành SeleniumCookie nếu cần (tùy thuộc vào phiên bản Selenium)
+            await this.driver.manage().addCookie(cookie as SeleniumCookie);
           }
         } catch (err) {
           console.warn("Cookie inject failed:", cookie.name);
@@ -151,9 +171,10 @@ export class XScraper {
     if (!this.driver) return;
     try {
       const image = await this.driver.takeScreenshot(); // takeScreenshot : WebDriver API
-      const filePath = path.join(process.cwd(), `screenshots/${name}_failure_${Date.now()}.png`);
-      // Tạo thư mục nếu chưa tồn tại
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      // Cải tiến: Sử dụng hằng số và tạo thư mục
+      const dir = path.resolve(process.cwd(), SCREENSHOTS_DIR_RELATIVE);
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, `${name}_failure_${Date.now()}.png`);
       fs.writeFileSync(filePath, image, "base64");
       console.log(`Screenshot saved to ${filePath}`);
     } catch (e) {
@@ -163,60 +184,66 @@ export class XScraper {
 
   private async login(): Promise<void> {
     if (!this.driver) throw new Error("WebDriver not initialized");
+    if (!this.credentials) throw new Error("Credentials not set");
 
     try {
       console.log("Logging in ...");
       await this.driver.get(LOGIN_URL);
 
-      // Email
-      await this.driver.wait(until.elementLocated(By.css(INITIAL_INPUT_SELECTOR_CSS)), 15000); // cho element email xuat hien
+      // 1. Email/Username Input
+      await this.driver.wait(until.elementLocated(By.css(INITIAL_INPUT_SELECTOR_CSS)), ELEMENT_LOCATE_TIMEOUT_MS); // cho element email xuat hien
       const emailInput = await this.driver.findElement(By.css(INITIAL_INPUT_SELECTOR_CSS)); // Lay input email
       await emailInput.sendKeys(this.credentials.email); // dien email tu this.credentials.email
 
-      // Click Next (Giả định selector của nút Next là một button phổ biến)
+      // Click Next (Sử dụng XPath từ hằng số)
       await this.driver.sleep(randomDelay(SHORT_DELAY_MIN, SHORT_DELAY_MAX));
-      try {
-        const nextButton = await this.driver.findElement(By.xpath('//span[text()="Next"]/..')); // Selector XPath phổ biến cho nút Next
-        await nextButton.click();
-      } catch {
-        await emailInput.sendKeys(Key.ENTER); // Thử dùng ENTER nếu không tìm thấy nút Next
-      }
+      const nextButton = await this.driver.findElement(By.xpath(NEXT_BUTTON_XPATH)); 
+      await nextButton.click();
       await this.driver.sleep(randomDelay(MEDIUM_DELAY_MIN, MEDIUM_DELAY_MAX));
 
-      // Username (neu can) - Logic login của X phức tạp hơn, chỉ cần nhập email ở bước đầu.
-      // Sau khi Next, trang có thể yêu cầu Username/Phone (nếu Email không khớp) hoặc Password.
-      // Vì không có logic cụ thể cho bước Username/Phone, ta tập trung vào Password.
+      // 2. Handle Username (Verification) OR Password
+      const passwordSelector = By.css(PASSWORD_SELECTOR_CSS);
+      const usernameVerificationSelector = By.css(USERNAME_VERIFICATION_SELECTOR_CSS);
       
-      // Password
+      // Chờ chuyển trang và kiểm tra xem là bước Password hay Username
       try {
-        const passwordSelector = By.css(PASSWORD_INPUT_SELECTOR_CSS);
-        await this.driver.wait(until.elementLocated(passwordSelector), ELEMENT_LOCATE_TIMEOUT_MS * 2);
-        const passwordInput = await this.driver.findElement(passwordSelector);
-        await passwordInput.sendKeys(this.credentials.password);
-
-        await this.driver.sleep(randomDelay(SHORT_DELAY_MIN, SHORT_DELAY_MAX));
-        
-        // Click Login Button hoặc Enter
+        await this.driver.wait(until.elementLocated(By.css(PASSWORD_SELECTOR_CSS)), ELEMENT_LOCATE_TIMEOUT_MS / 2);
+      } catch {
+        // Nếu không tìm thấy Password ngay lập tức, thử tìm Username Verification
         try {
-          const loginBtn = await this.driver.findElement(By.xpath('//span[text()="Log in"]/..')); // Selector XPath phổ biến cho nút Login
-          await loginBtn.click();
-        } catch {
-          await passwordInput.sendKeys(Key.ENTER); // Thử dùng ENTER
+          const usernameInput = await this.driver.findElement(usernameVerificationSelector);
+          console.log("Username verification step detected.");
+          await usernameInput.sendKeys(this.credentials.username);
+          await this.driver.sleep(randomDelay(SHORT_DELAY_MIN, SHORT_DELAY_MAX));
+
+          const nextButtonStep2 = await this.driver.findElement(By.xpath(NEXT_BUTTON_XPATH));
+          await nextButtonStep2.click();
+          await this.driver.wait(until.elementLocated(passwordSelector), ELEMENT_LOCATE_TIMEOUT_MS * 2); // Chờ password sau khi submit username
+        } catch (e) {
+          console.error("Failed to handle username verification.");
+          throw e;
         }
-      } catch (e) {
-        console.error("Failed to find or interact with password input after email/username submission.");
-        throw e;
       }
+      
+      // 3. Password Input
+      const passwordInput = await this.driver.findElement(passwordSelector);
+      await passwordInput.sendKeys(this.credentials.password);
+
+      await this.driver.sleep(randomDelay(SHORT_DELAY_MIN, SHORT_DELAY_MAX));
+      
+      // Submit (Key.ENTER)
+      await passwordInput.sendKeys(Key.ENTER);
+      await this.driver.sleep(randomDelay(LONG_DELAY_MIN, LONG_DELAY_MAX));
 
 
-      // Xac nhan login
+      // 4. Xac nhan login
       await this.driver.wait(
-        until.elementLocated(By.css(PRIMARY_COLUMN_SELECTOR_CSS)), // Đợi cột chính thay vì tweet article
+        until.elementLocated(By.css(PRIMARY_COLUMN_SELECTOR_CSS)), // Đợi cột chính
         ELEMENT_LOCATE_TIMEOUT_MS * 3
       );
       console.log("Login successful!");
 
-      // save cookies
+      // 5. save cookies
       const cookies = await this.driver.manage().getCookies();
       this.saveCookies(cookies);
     } catch (error) {
@@ -226,7 +253,7 @@ export class XScraper {
     }
   }
 
-  public async ensureLoggedIn(): Promise<void> {
+  public async ensureLoggedIn(): Promise<boolean> {
     const cookies = this.loadCookies();
     const expired = this.areCookiesExpired(cookies || []);
 
@@ -242,20 +269,27 @@ export class XScraper {
           ELEMENT_LOCATE_TIMEOUT_MS
         );
         console.log("✅ Session restored from cookies");
-        return;
+        return true;
       } catch (e) {
         console.warn("⚠️ Cookies invalid, relogin required", e);
         await this.closeDriver();
+        // Tiếp tục xuống login mới
       }
     }
 
     // Nếu không có cookies hoặc hết hạn → login mới
-    await this.initDriver();
-    await this.login();
+    try {
+      if (!this.driver) await this.initDriver();
+      await this.login();
+      return true;
+    } catch (e) {
+      console.error("Final login attempt failed.", e);
+      return false;
+    }
   }
 
   
-  // ========================= PHẦN ENSURE LOGIN HOÀN CHỈNH ========================= //
+  // ========================= PHẦN LẤY URL VÀ TRÍCH XUẤT ========================= //
 
   // Ham lay tweet(bam vao tweet-> cho chuyen sang status-> lay url -> back)
   private async getTweetUrlViaNavigation(
@@ -318,6 +352,7 @@ export class XScraper {
   // ========================= TRICH XUAT TWEET (Đã thêm logic cuộn) ========================= //
 
   public async extractTweets(driver: WebDriver): Promise<Tweet[]> {
+    const MAX_TWEETS_TO_PROCESS_PER_ACCOUNT = 50; // Giới hạn tạm thời 50 (Cần import từ constant.ts nếu đã có)
     const tweets: Tweet[] = []; // danh sach tweet
     let currentTweetIndexOnPage = 0; // index tweet dang xu li
     const processedTweetIdentifiers = new Set<string>(); // luu datatime cua tweet de tranh lap
@@ -325,7 +360,7 @@ export class XScraper {
     const MAX_CONSECUTIVE_SCROLLS_WITHOUT_NEW_CONTENT = 3; // Cuộn tối đa 3 lần mà không thấy nội dung mới
 
     // vong lap chinh
-    for (let attempt = 0; tweets.length < 50 && attempt < 150; attempt++) {
+    for (let attempt = 0; tweets.length < MAX_TWEETS_TO_PROCESS_PER_ACCOUNT && attempt < 150; attempt++) {
         
       // 1. Tải lại danh sách bài viết
       await driver.wait(until.elementLocated(By.css(TWEET_ARTICLE_SELECTOR_CSS)), ELEMENT_LOCATE_TIMEOUT_MS);
@@ -382,7 +417,8 @@ export class XScraper {
 
       // trich xuat du lieu tweet
       let tweetText = "";
-      const textNodes = await el.findElements(By.css(TWEET_TEXT_SELECTOR_CSS));
+      // Cần sử dụng TWEET_TEXT_SELECTOR_CSS đã fix trong constant.ts
+      const textNodes = await el.findElements(By.css(TWEET_TEXT_SELECTOR_CSS)); 
       if (textNodes.length > 0) {
         for (const node of textNodes) {
           tweetText += `${await node.getText()} `; // Thêm dấu cách để các đoạn text không dính vào nhau
@@ -403,17 +439,20 @@ export class XScraper {
       let likeCount: number | null = null;
 
       try {
-        const replyButton = await el.findElement(By.css(REPLY_COUNT_SELECTOR_CSS));
+        // Sử dụng REPLY_COUNT_SELECTOR_CSS đã fix
+        const replyButton = await el.findElement(By.css(REPLY_COUNT_SELECTOR_CSS)); 
         replyCount = parseEngagementCount(await replyButton.getText());
       } catch {}
 
       try {
-        const retweetButton = await el.findElement(By.css(RETWEET_COUNT_SELECTOR_CSS));
+        // Sử dụng RETWEET_COUNT_SELECTOR_CSS đã fix
+        const retweetButton = await el.findElement(By.css(RETWEET_COUNT_SELECTOR_CSS)); 
         retweetCount = parseEngagementCount(await retweetButton.getText());
       } catch {}
 
       try {
-        const likeButton = await el.findElement(By.css(LIKE_COUNT_SELECTOR_CSS));
+        // Sử dụng LIKE_COUNT_SELECTOR_CSS đã fix
+        const likeButton = await el.findElement(By.css(LIKE_COUNT_SELECTOR_CSS)); 
         likeCount = parseEngagementCount(await likeButton.getText());
       } catch {}
 
@@ -450,29 +489,78 @@ export class XScraper {
   }
 
   
-  // ========================= HAM NGHIEP VU CHINH ========================= //
+  // ========================= HAM NGHIEP VU CHINH (ĐÃ TÍCH HỢP LOGIC DB) ========================= //
 
-  public async runScraping(xId: string): Promise<Tweet[]> {
-    await this.ensureLoggedIn();
-    if (!this.driver) {
+  // Đổi tên hàm để phản ánh logic nghiệp vụ (Kiểm tra và lưu)
+  public async checkSingleAccount(xId: string): Promise<Date | null> {
+    
+    // 1. Đảm bảo đăng nhập
+    const isLoggedIn = await this.ensureLoggedIn();
+
+    if (!isLoggedIn || !this.driver) {
       console.error("Driver not available after ensureLoggedIn.");
-      return [];
+      return null;
     }
 
     try {
       console.log(`Navigating to account: ${xId}`);
-      await this.driver.get(`${X_BASE_URL}/${xId}`);
-      await this.driver.wait(
+      await this.driver!.get(`${X_BASE_URL}/${xId}`);
+      await this.driver!.wait(
         until.elementLocated(By.css(TWEET_ARTICLE_SELECTOR_CSS)),
         ELEMENT_LOCATE_TIMEOUT_MS
       );
-      return await this.extractTweets(this.driver);
+      
+      // 2. Trích xuất tất cả tweets có thể
+      const extractedTweets = await this.extractTweets(this.driver!);
+
+      if (extractedTweets.length === 0) {
+        console.warn(`No tweets found for ${xId}`);
+        return null;
+      }
+
+      // 3. Lấy thông tin tài khoản từ DB
+      const accounts = await getAllXAccounts();
+      const account = accounts.find((acc) => acc.id === xId);
+
+      if (!account) {
+        console.error(`Account ${xId} not found in database`);
+        return null;
+      }
+
+      // 4. Lọc tweets mới hơn lastTweetUpdatedAt
+      const newTweets = extractedTweets.filter((tweet) => {
+        const tweetDate = new Date(tweet.time);
+        // lastTweetUpdatedAt có thể là null nếu chưa từng scrape
+        return !account.lastTweetUpdatedAt || tweetDate > new Date(account.lastTweetUpdatedAt);
+      });
+
+      if (newTweets.length === 0) {
+        console.log(`No new tweets found for ${xId} since last check.`);
+        return null;
+      }
+
+      console.log(`Found ${newTweets.length} new tweets for ${xId}. Saving to DB.`);
+
+      // 5. Lưu tweets mới và cập nhật timestamp
+      const latestTweetTimestampProcessed = await saveTweets(xId, newTweets);
+
+      return latestTweetTimestampProcessed;
+
     } catch (error) {
-      console.error(`Error in runScraping for ${xId}:`, error);
-      await this.captureFailureScreenshot(`runScraping_error_${xId}`);
-      return [];
+      console.error(`Error in checkSingleAccount for ${xId}:`, error);
+      await this.captureFailureScreenshot(`checkSingleAccount_error_${xId}`);
+      return null;
     } finally {
       await this.closeDriver();
     }
+  }
+
+  // Tương đương với hàm runScraping cũ, nhưng đã được đổi tên để tích hợp logic DB.
+  public async runScraping(xId: string): Promise<Tweet[]> {
+    const timestamp = await this.checkSingleAccount(xId);
+    // Hàm này được giữ lại để phù hợp với interface cũ nếu cần, nhưng logic cốt lõi nằm ở checkSingleAccount.
+    // Vì checkSingleAccount đã đóng driver, nếu muốn lấy lại list Tweets, bạn sẽ cần query DB.
+    console.warn("runScraping is deprecated. Use checkSingleAccount for full lifecycle. Returning dummy list.");
+    return []; 
   }
 }
