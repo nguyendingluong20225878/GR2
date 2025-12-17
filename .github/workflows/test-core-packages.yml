@@ -1,0 +1,50 @@
+name: CI - Core Packages Tests
+
+on:
+  push:
+    paths:
+      - 'core/**'
+  pull_request:
+    paths:
+      - 'core/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:6.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run proposal-generator tests
+        working-directory: core/proposal-generator
+        run: pnpm test
+        env:
+          MONGODB_URI: mongodb://localhost:27017/daiko-test
+
+      - name: Run token-price-fetcher tests
+        working-directory: core/token-price-fetcher
+        run: pnpm test
+        env:
+          # token-price-fetcher tests are designed to not require DB credentials
+          DATABASE_URL: ''

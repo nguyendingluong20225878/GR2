@@ -1,0 +1,25 @@
+{
+  "name": "@daiko-ai/proposal-generator",
+  "version": "0.1.0",
+  "description": "Agent for generating investment proposals",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "format": "prettier --write .",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@daiko-ai/news-scraper": "workspace:*",
+    "@daiko-ai/x-scraper": "workspace:*",
+    "@langchain/community": "^0.3.42",
+    "@langchain/core": "^0.3.50",
+    "@langchain/langgraph": "^0.2.67",
+    "@langchain/openai": "^0.3.17"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.3"
+  }
+}
