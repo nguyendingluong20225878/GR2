@@ -1,4 +1,11 @@
-import { HydratedDocument, InferSchemaType, Schema, model, models } from "mongoose";
+import {
+  HydratedDocument,
+  InferSchemaType,
+  Schema,
+  model,
+  models,
+  Model,
+} from "mongoose";
 import { userBalanceSubSchema } from "./user_balances";
 
 const userSchema = new Schema(
@@ -29,7 +36,9 @@ const userSchema = new Schema(
 
 export type UserSchema = InferSchemaType<typeof userSchema>;
 export type UserDocument = HydratedDocument<UserSchema>;
-export type UserSelect = UserDocument;
+export type UserSelect = UserSchema;
 export type UserInsert = UserSchema;
 
-export const usersTable = models.User ?? model<UserSchema>("User", userSchema);
+export const usersTable: Model<UserSchema> =
+  (models.User as Model<UserSchema>) ??
+  model<UserSchema>("User", userSchema);

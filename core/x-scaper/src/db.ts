@@ -1,88 +1,74 @@
-import { Logger, LogLevel, Tweet, XAccountInsert, XAccountSelect} from "@gr2/core-models";
-import { repositortFactory} from "@gr2/core-repositories";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import {
+  Logger,
+  LogLevel,
+  Tweet,
+  xAccountTable,
+  tweetTable,
+  connectToDatabase,
+} from "../../shared/src";
+import { XAccount } from "../../shared/src/types/x-account";
 
-export const XAccountRepository = repositortFactory.getXAccountRepository();
-export const tweetRepository = repositortFactory.getTweetRepository();
+const log = new Logger({ level: LogLevel.INFO });
 
-const log = new Logger ({
-    level: LogLevel.INFO, // Muc log co the la DEBUG, INFO, WARN, ERROR
-})
+let dbInitialized = false;
+async function initDB() {
+  if (!dbInitialized) {
+    await connectToDatabase();
+    dbInitialized = true;
+  }
+}
 
-//Lay tat ca ACC
-export const getAllXAccounts = async () : Promise<XAccountSelect[]> => {
-    try {
-        return await XAccountRepository.findAll();
-    } catch (error) {
-        log.error("Error fetching X accounts:", error);
-        throw error;
-    }
+// =============================
+//      LẤY DANH SÁCH ACCOUNT
+// =============================
+export const getAllXAccounts = async (): Promise<XAccount[]> => {
+  await initDB();
+
+  const docs = await xAccountTable.find().lean();
+
+  return docs.map((d) => ({
+    id: d._id,
+    displayName: d.displayName,
+    profileImageUrl: d.profileImageUrl,
+    lastTweetUpdatedAt: d.lastTweetUpdatedAt ?? null,
+  }));
 };
 
-// them hoac cap nhap Acc
-export const saveAccount = async (account: XAccountInsert): Promise<void> => {
-    try {
-        if( account.id ) {
-            await XAccountRepository.update(account.id, {
-            ...account,
-            updatedAt: new Date(),
-        });
-        log.info(`Account with ID ${account.id} updated successfully.`);
-        } else {
-            await XAccountRepository.create({
-                ...account,
-                createdAt: new Date(),
-                updatedAt: new Date(),   
-            });
-            log.info(`New account created successfully.`);
+// =============================
+//          LƯU TWEETS
+// =============================
+export const saveTweets = async (
+  accountId: string,
+  tweets: Tweet[],
+): Promise<Date | null> => {
+  await initDB();
 
-        }
-     } catch (error) {
-        log.error("Error saving account:", error);
-        throw error;
-            
-        
-    }
-};
+  if (!tweets.length) return null;
 
-// Luu tweet moi
-export const saveTweets = async (accountId: string, tweets: Tweet[]) : Promise<Date | null> => {
-    try {
+  const tweetDocuments = tweets.map((t) => ({
+    authorId: accountId,
+    url: t.url,
+    retweetCount: t.retweetCount ?? 0,
+    replyCount: t.replyCount ?? 0,
+    likeCount: t.likeCount ?? 0,
+    content: t.data,
+    tweetTime: new Date(t.time),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }));
 
-    if(!tweets.length) return null;
+  await tweetTable.insertMany(tweetDocuments, { ordered: false }).catch(() => {});
 
-    let newestTweetDate: Date | null = null;
-    for ( const tweet of tweets ) {
-        const tweetDate = new Date(tweet.time);
-        await tweetRepository.create({
-            authorId: accountId,
-            url: tweet.url,
-            retweetCount: tweet.retweetCount ?? 0,
-            replyCount: tweet.replyCount ?? 0,
-            likeCount: tweet.likeCount ?? 0,
-            content: tweet.data,
-            tweetTime : tweetDate,
-        });
+  const newest = tweets
+    .map((t) => new Date(t.time))
+    .sort((a, b) => b.getTime() - a.getTime())[0];
 
-        //tim tweet moi nhat
-        if (!newestTweetDate || tweetDate > newestTweetDate) {
-    
-            newestTweetDate = tweetDate;}
-        }    
-        
-        //cap nhat lai lastScrapedAt tren XAccount
-          if (newestTweetDate) {
-      await XAccountRepository.updateLastTweetUpdatedAt(accountId, newestTweetDate);
-      log.info(
-        "x-scraper:db",
-        `Updated lastTweetUpdatedAt for account ${accountId} to: ${newestTweetDate.toISOString()}`,
-      );
-    }
+  if (newest) {
+    await xAccountTable.updateOne(
+      { _id: accountId },
+      { $set: { lastTweetUpdatedAt: newest } },
+    );
+  }
 
-    return newestTweetDate;
-    }catch (error) {
-         log.error("x-scraper:db", `Error saving tweets for account ${accountId}:`, error);
-    return null;
-    }
+  return newest ?? null;
 };

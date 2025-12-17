@@ -1,4 +1,11 @@
-import { HydratedDocument, InferSchemaType, Schema, model, models } from "mongoose";
+import {
+  HydratedDocument,
+  InferSchemaType,
+  Schema,
+  model,
+  models,
+  Model,
+} from "mongoose";
 
 const tweetSchema = new Schema(
   {
@@ -21,7 +28,9 @@ tweetSchema.index({ tweetTime: -1 });
 
 export type TweetSchema = InferSchemaType<typeof tweetSchema>;
 export type TweetDocument = HydratedDocument<TweetSchema>;
-export type TweetSelect = TweetDocument;
+export type TweetSelect = TweetSchema;
 export type TweetInsert = TweetSchema;
 
-export const tweetTable = models.Tweet ?? model<TweetSchema>("Tweet", tweetSchema);
+export const tweetTable: Model<TweetSchema> =
+  (models.Tweet as Model<TweetSchema>) ??
+  model<TweetSchema>("Tweet", tweetSchema);

@@ -1,112 +1,144 @@
-import { Types } from "mongoose";
+import { Types, Model } from "mongoose";
 import { connectToDatabase } from "../db";
-import { tokenPricesTable } from "../db/schema/token_prices";
-import { tokensTable } from "../db/schema/tokens";
+import { tokenPricesTable as _tokenPricesTable } from "../db/schema/token_prices";
+import { tokensTable as _tokensTable, TokenSchema } from "../db/schema/tokens";
 import { usersTable } from "../db/schema/users";
 import { logger } from "./logger";
 
-/**
- * ユーザーの初期ポートフォリオをセットアップする共通関数
- * Auth.js での新規ユーザー登録時、および seed.ts でのテストユーザー作成時に使用
- *
- * @param userId ポートフォリオを設定するユーザーID
- * @param options カスタム設定オプション
- */
+/* ✅ CAST MODEL 1 LẦN DUY NHẤT */
+const tokensTable = _tokensTable as Model<TokenSchema>;
+const tokenPricesTable = _tokenPricesTable as Model<{
+  tokenAddress: string;
+  priceUsd: string;
+}>;
+
 export async function setupInitialPortfolio(
   userId: string,
   options?: {
-    // カスタム残高設定（指定された場合はデフォルト設定より優先）- USD建て
     customBalances?: Record<string, number>;
-    // 特定のトークンシンボルのみを使用
     specificSymbols?: string[];
   },
 ): Promise<void> {
   try {
     await connectToDatabase();
 
-    const tokenQuery = options?.specificSymbols && options.specificSymbols.length > 0
-      ? { symbol: { $in: options.specificSymbols } }
-      : {};
+    /* ===============================
+       1. QUERY TOKENS
+    =============================== */
+
+    const tokenQuery =
+      options?.specificSymbols?.length
+        ? { symbol: { $in: options.specificSymbols } }
+        : {};
 
     const tokens = await tokensTable.find(tokenQuery).lean();
 
     if (!tokens.length) {
-      logger.error("setupInitialPortfolio", "初期ポートフォリオのセットアップに必要なトークンが見つかりませんでした");
+      logger.error(
+        "setupInitialPortfolio",
+        "Không tìm thấy token để setup portfolio",
+      );
       return;
     }
 
-    // トークン価格を取得
+    /* ===============================
+       2. QUERY PRICES (HẾT TS2349)
+    =============================== */
+
     const tokenPrices = await tokenPricesTable
       .find({
         tokenAddress: { $in: tokens.map((t) => t.address) },
       })
       .lean();
 
-    // 価格マップを作成
-    const priceMap = new Map(tokenPrices.map((tp) => [tp.tokenAddress, parseFloat(tp.priceUsd)]));
+    /* ===============================
+       3. BUILD PRICE MAP
+    =============================== */
 
-    // デフォルトのUSD建て残高設定
+    const priceMap = new Map<string, number>();
+    for (const tp of tokenPrices) {
+      const price = Number(tp.priceUsd);
+      priceMap.set(tp.tokenAddress, Number.isFinite(price) ? price : 0);
+    }
+
+    /* ===============================
+       4. DEFAULT BALANCES
+    =============================== */
+
     const defaultUsdBalances: Record<string, number> = {
-      SOL: 2000, // $2,000 worth of SOL
-      JUP: 1000, // $1,000 worth of JUP
-      JTO: 1000, // $1,000 worth of JTO
-      RAY: 1000, // $1,000 worth of RAY
-      HNT: 1000, // $1,000 worth of HNT
-      PYTH: 1000, // $1,000 worth of PYTH
-      TRUMP: 1000, // $1,000 worth of TRUMP
-      WIF: 1000, // $1,000 worth of WIF
-      W: 1000, // $1,000 worth of W
-      MEW: 1000, // $1,000 worth of MEW
-      POPCAT: 1000, // $1,000 worth of POPCAT
-      ORCA: 1000, // $1,000 worth of ORCA
-      ZEUS: 1000, // $1,000 worth of ZEUS
-      KMNO: 1000, // $1,000 worth of KMNO
-      WBTC: 2000, // $2,000 worth of WBTC
-      USDC: 2000, // $2,000 worth of USDC
-      BONK: 1000, // $1,000 worth of BONK
-      WSUI: 1000, // $1,000 worth of WSUI
-      BIO: 1000, // $1,000 worth of BIO
-      LAYER: 1000, // $1,000 worth of LAYER
-      AIXBT: 1000, // $1,000 worth of AIXBT
-      ACT: 1000, // $1,000 worth of ACT
-      Fartcoin: 1000, // $1,000 worth of Fartcoin
-      MELANIA: 1000, // $1,000 worth of MELANIA
+      SOL: 2000,
+      JUP: 1000,
+      JTO: 1000,
+      RAY: 1000,
+      HNT: 1000,
+      PYTH: 1000,
+      TRUMP: 1000,
+      WIF: 1000,
+      W: 1000,
+      MEW: 1000,
+      POPCAT: 1000,
+      ORCA: 1000,
+      ZEUS: 1000,
+      KMNO: 1000,
+      WBTC: 2000,
+      USDC: 2000,
+      BONK: 1000,
+      WSUI: 1000,
+      BIO: 1000,
+      LAYER: 1000,
+      AIXBT: 1000,
+      ACT: 1000,
+      Fartcoin: 1000,
+      MELANIA: 1000,
     };
 
-    // 各トークンに対して残高を作成
-    const initialBalances = tokens.map((token) => {
-      // カスタム残高（USD建て）が指定されている場合はそれを使用し、
-      // なければデフォルト残高を使用、どちらもなければ0
-      const usdAmount = options?.customBalances?.[token.symbol] ?? defaultUsdBalances[token.symbol] ?? 0;
-      const price = priceMap.get(token.address) || 0;
+    /* ===============================
+       5. CALCULATE BALANCES
+    =============================== */
 
-      // トークン数量を計算（USD金額 ÷ トークン価格）
-      // 価格が0の場合は0を設定
-      const tokenAmount = price > 0 ? usdAmount / price : 0;
+    const balancesToInsert = tokens
+      .map((token) => {
+        const usdAmount =
+          options?.customBalances?.[token.symbol] ??
+          defaultUsdBalances[token.symbol] ??
+          0;
 
-      return {
-        tokenAddress: token.address,
-        balance: tokenAmount.toString(),
-        updatedAt: new Date(),
-      };
-    });
+        const price = priceMap.get(token.address) ?? 0;
+        const tokenAmount = price > 0 ? usdAmount / price : 0;
 
-    // 残高が0より大きいもののみフィルタリング
-    const balancesToInsert = initialBalances.filter(({ balance }) => parseFloat(balance) > 0);
+        return {
+          tokenAddress: token.address,
+          balance: tokenAmount.toString(),
+          updatedAt: new Date(),
+        };
+      })
+      .filter((b) => Number(b.balance) > 0);
 
-    const normalizedUserId = Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : userId;
+    /* ===============================
+       6. UPDATE USER
+    =============================== */
 
-    if (balancesToInsert.length > 0) {
+    const normalizedUserId = Types.ObjectId.isValid(userId)
+      ? new Types.ObjectId(userId)
+      : userId;
+
+    if (balancesToInsert.length) {
       await usersTable.updateOne(
         { _id: normalizedUserId },
         { $set: { balances: balancesToInsert } },
-        { upsert: false },
       );
     }
 
-    logger.info("setupInitialPortfolio", `Completed initial portfolio setup for user ${userId}`);
+    logger.info(
+      "setupInitialPortfolio",
+      `Completed portfolio setup for user ${userId}`,
+    );
   } catch (error) {
-    logger.error("setupInitialPortfolio", "Failed to setup initial portfolio", error);
+    logger.error(
+      "setupInitialPortfolio",
+      "Failed to setup initial portfolio",
+      error,
+    );
     throw error;
   }
 }

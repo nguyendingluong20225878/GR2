@@ -6,7 +6,11 @@ export const X_BASE_URL = "https://x.com";
 // Login Selectors
 export const INITIAL_INPUT_SELECTOR_CSS = "input[autocomplete='username']";
 export const NEXT_BUTTON_XPATH = "//button[.//span[text()='Next']]";
-export const PASSWORD_SELECTOR_CSS = "input[name='password']";
+// X thường render input mật khẩu với cả name="password" và type="password".
+// Dùng selector gộp để resilient hơn với thay đổi DOM nhỏ.
+export const PASSWORD_SELECTOR_CSS =
+  "input[name='password'], input[type='password']";
+
 export const USERNAME_VERIFICATION_SELECTOR_CSS = "input[name='text']";
 export const PRIMARY_COLUMN_SELECTOR_CSS = "div[data-testid='primaryColumn']";
 

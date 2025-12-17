@@ -20,12 +20,14 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@types/mongoose": "^5.11.96",
     "@types/node": "^24.10.1",
     "@types/selenium-webdriver": "^4.35.4",
     "turbo": "^2.6.1",
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "mongoose": "^9.0.0",
     "selenium-webdriver": "^4.38.0"
   }
 }

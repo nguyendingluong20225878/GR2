@@ -1,4 +1,4 @@
-import { HydratedDocument, InferSchemaType, Schema, model, models } from "mongoose";
+import { InferSchemaType, Schema, model, models, Model } from "mongoose";
 
 const xAccountSchema = new Schema(
   {
@@ -10,15 +10,14 @@ const xAccountSchema = new Schema(
   },
   {
     collection: "x_accounts",
-    timestamps: { createdAt: "createdAt", updatedAt: "updatedAt" },
+    timestamps: true,
   },
 );
 
 xAccountSchema.index({ lastTweetUpdatedAt: -1 });
 
 export type XAccountSchema = InferSchemaType<typeof xAccountSchema>;
-export type XAccountDocument = HydratedDocument<XAccountSchema>;
-export type XAccountSelect = XAccountDocument;
-export type XAccountInsert = XAccountSchema;
 
-export const xAccountTable = models.XAccount ?? model<XAccountSchema>("XAccount", xAccountSchema);
+export const xAccountTable: Model<XAccountSchema> =
+  (models.XAccount as Model<XAccountSchema>) ??
+  model<XAccountSchema>("XAccount", xAccountSchema);
